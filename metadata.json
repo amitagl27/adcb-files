@@ -1,0 +1,21 @@
+{
+  "jwe": {
+    "algorithm": "RSA-OAEP-256",
+    "encryption": "A256GCM",
+    "privateKeyPkcs8Pem": "-----BEGIN PRIVATE KEY-----\nPASTE_YOUR_DEMO_PKCS8_PRIVATE_KEY_HERE\n-----END PRIVATE KEY-----"
+  },
+  "platform": {
+    "iframeUrl": "/"
+  },
+  "displayFields": [
+    { "name": "appRef", "label": "Application Reference" },
+    { "name": "documentTypeCode", "label": "Document Type" },
+    { "name": "userId", "label": "User ID" },
+    { "name": "processCode", "label": "Process Code" },
+    { "name": "processDesc", "label": "Process Description" },
+    { "name": "issuedAt", "label": "Issued At", "type": "timestamp" },
+    { "name": "expiry", "label": "Expiry", "type": "timestamp" },
+    { "name": "env", "label": "Environment" },
+    { "name": "nonce", "label": "Nonce" }
+  ]
+}
