@@ -76,6 +76,24 @@
       border-color: #f5c2c7;
     }
 
+    #status.success {
+      background: #d1e7dd;
+      color: #0f5132;
+      border-color: #badbcc;
+    }
+
+    #loginButton {
+      display: none;
+      margin-left: 12px;
+      padding: 7px 14px;
+      border: 0;
+      border-radius: 3px;
+      background: #17365d;
+      color: #fff;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
     #platformFrame {
       display: none;
       flex: 1;
@@ -92,13 +110,18 @@
     <div id="metadata" aria-live="polite"></div>
   </header>
 
-  <div id="status">Reading request details…</div>
+  <div id="status">
+    <span id="statusText">Reading request details…</span>
+    <button id="loginButton" type="button">Sign in</button>
+  </div>
   <iframe id="platformFrame" title="IC Process application"></iframe>
 
   <script>
     "use strict";
 
     const statusElement = document.getElementById("status");
+    const statusText = document.getElementById("statusText");
+    const loginButton = document.getElementById("loginButton");
     const metadataElement = document.getElementById("metadata");
     const platformFrame = document.getElementById("platformFrame");
 
@@ -115,8 +138,13 @@
     ];
 
     function showError(message) {
-      statusElement.textContent = message;
+      statusText.textContent = message;
       statusElement.className = "error";
+    }
+
+    function showStatus(message, className = "") {
+      statusText.textContent = message;
+      statusElement.className = className;
     }
 
     function base64UrlDecode(value) {
@@ -279,6 +307,103 @@
       platformFrame.style.display = "block";
     }
 
+    async function hasActiveSession(authCheckUrl) {
+      try {
+        const target = new URL(authCheckUrl, window.location.origin);
+        target.searchParams.set("_authCheck", Date.now().toString());
+
+        const response = await fetch(target.href, {
+          method: "GET",
+          credentials: "include",
+          cache: "no-store",
+          redirect: "manual"
+        });
+
+        return response.status === 200 && response.type !== "opaqueredirect";
+      } catch (error) {
+        console.warn("Authentication check failed:", error);
+        return false;
+      }
+    }
+
+    function buildLoginUrl(loginUrl) {
+      const target = new URL(loginUrl || "/", window.location.origin);
+      target.searchParams.set("_login", Date.now().toString());
+      return target.href;
+    }
+
+    function waitForAuthentication(authCheckUrl, loginWindow) {
+      return new Promise((resolve, reject) => {
+        const startedAt = Date.now();
+        const timeoutMs = 5 * 60 * 1000;
+
+        const timer = window.setInterval(async () => {
+          if (await hasActiveSession(authCheckUrl)) {
+            window.clearInterval(timer);
+            try {
+              if (loginWindow && !loginWindow.closed) loginWindow.close();
+            } catch { /* The popup may still be on the Azure origin. */ }
+            resolve();
+            return;
+          }
+
+          if (Date.now() - startedAt >= timeoutMs) {
+            window.clearInterval(timer);
+            reject(new Error("Sign-in was not completed within five minutes."));
+          }
+        }, 2000);
+      });
+    }
+
+    async function ensureAuthenticated(configuration) {
+      const authCheckUrl = configuration.platform?.authCheckUrl || "/cp-rest/about";
+      const loginUrl = configuration.platform?.loginUrl || configuration.platform?.iframeUrl || "/";
+
+      showStatus("Checking your IC session…");
+      if (await hasActiveSession(authCheckUrl)) return;
+
+      showStatus("Sign in to Intelligent Capture in the separate window.");
+
+      return new Promise((resolve, reject) => {
+        let authenticationInProgress = false;
+
+        const beginLogin = async () => {
+          if (authenticationInProgress) return;
+          authenticationInProgress = true;
+          loginButton.style.display = "none";
+
+          const loginWindow = window.open(
+            buildLoginUrl(loginUrl),
+            "icAuthentication",
+            "popup=yes,width=1100,height=800,resizable=yes,scrollbars=yes"
+          );
+
+          if (!loginWindow) {
+            authenticationInProgress = false;
+            loginButton.style.display = "inline-block";
+            showError("The sign-in popup was blocked. Click Sign in to continue.");
+            return;
+          }
+
+          showStatus("Complete sign-in in the separate window…");
+          try {
+            await waitForAuthentication(authCheckUrl, loginWindow);
+            resolve();
+          } catch (error) {
+            authenticationInProgress = false;
+            loginButton.style.display = "inline-block";
+            showError(error.message);
+          }
+        };
+
+        loginButton.onclick = beginLogin;
+        loginButton.style.display = "inline-block";
+
+        // Attempt automatically; the button remains as a fallback for popup blockers.
+        beginLogin();
+      });
+    }
+
     async function initialize() {
       const sessionToken = new URLSearchParams(window.location.search).get("session");
       let configuration = {
@@ -288,6 +413,8 @@
 
       // Always show every field, even before decryption or when decryption fails.
       displayMetadata({}, defaultDisplayFields);
+
+      let decryptionError = null;
 
       try {
         const response = await fetch("./metadata.json", { cache: "no-store" });
@@ -320,17 +447,26 @@
         }
 
         displayMetadata(payload, fields);
-        statusElement.remove();
       } catch (error) {
         console.error(error);
+        decryptionError = error;
         showError(`Unable to decrypt the request: ${error.message}`);
-      } finally {
-        try {
-          loadPlatform(configuration.platform?.iframeUrl || "/", sessionToken);
-        } catch (iframeError) {
-          console.error(iframeError);
-          showError(`Unable to load the platform: ${iframeError.message}`);
+      }
+
+      try {
+        await ensureAuthenticated(configuration);
+        loginButton.style.display = "none";
+        loadPlatform(configuration.platform?.iframeUrl || "/", sessionToken);
+
+        if (decryptionError) {
+          showError(`Request details could not be decrypted, but IC was loaded: ${decryptionError.message}`);
+        } else {
+          showStatus("Authenticated. Loading Intelligent Capture…", "success");
+          window.setTimeout(() => statusElement.remove(), 1200);
         }
+      } catch (authenticationError) {
+        console.error(authenticationError);
+        showError(`Unable to authenticate: ${authenticationError.message}`);
       }
     }
 
