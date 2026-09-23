@@ -24,46 +24,8 @@
       color: #17202a;
     }
 
-    header {
-      padding: 14px 20px;
-      background: #17365d;
-      color: #fff;
-      box-shadow: 0 2px 5px rgba(0, 0, 0, 0.18);
-      z-index: 1;
-    }
-
-    h1 {
-      margin: 0 0 12px;
-      font-size: 20px;
-    }
-
-    #metadata {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-      gap: 8px 18px;
-      font-size: 13px;
-    }
-
-    .field {
-      min-width: 0;
-    }
-
-    .label {
-      display: block;
-      color: #cbd8e8;
-      font-size: 11px;
-      font-weight: bold;
-      letter-spacing: .03em;
-      text-transform: uppercase;
-    }
-
-    .value {
-      display: block;
-      margin-top: 2px;
-      overflow-wrap: anywhere;
-    }
-
     #status {
+      display: none;
       padding: 14px 20px;
       background: #fff3cd;
       color: #664d03;
@@ -82,16 +44,53 @@
       border-color: #badbcc;
     }
 
+    #authOverlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: #eef2f6;
+    }
+
+    #authOverlay[hidden] { display: none; }
+
+    .auth-card {
+      width: min(430px, 100%);
+      padding: 34px;
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: 0 12px 35px rgba(23, 54, 93, .2);
+      text-align: center;
+    }
+
+    .auth-card h1 {
+      margin: 0 0 10px;
+      color: #17365d;
+      font-size: 24px;
+    }
+
+    .auth-card p {
+      margin: 0 0 24px;
+      color: #536273;
+      line-height: 1.5;
+    }
+
     #loginButton {
-      display: none;
-      margin-left: 12px;
-      padding: 7px 14px;
+      padding: 11px 24px;
       border: 0;
-      border-radius: 3px;
+      border-radius: 4px;
       background: #17365d;
       color: #fff;
       cursor: pointer;
       font-weight: bold;
+    }
+
+    #loginButton:disabled {
+      cursor: wait;
+      opacity: .65;
     }
 
     #platformFrame {
@@ -105,15 +104,18 @@
   </style>
 </head>
 <body>
-  <header>
-    <h1>Custom Page</h1>
-    <div id="metadata" aria-live="polite"></div>
-  </header>
-
   <div id="status">
     <span id="statusText">Reading request details…</span>
-    <button id="loginButton" type="button">Sign in</button>
   </div>
+
+  <div id="authOverlay">
+    <div class="auth-card" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+      <h1 id="authTitle">Sign in to continue</h1>
+      <p id="authMessage">Checking your Intelligent Capture session…</p>
+      <button id="loginButton" type="button" hidden>Sign in</button>
+    </div>
+  </div>
+
   <iframe id="platformFrame" title="IC Process application"></iframe>
 
   <script>
@@ -121,9 +123,13 @@
 
     const statusElement = document.getElementById("status");
     const statusText = document.getElementById("statusText");
+    const authOverlay = document.getElementById("authOverlay");
+    const authMessage = document.getElementById("authMessage");
     const loginButton = document.getElementById("loginButton");
-    const metadataElement = document.getElementById("metadata");
     const platformFrame = document.getElementById("platformFrame");
+    let metadataPayload = {};
+    let metadataFields = [];
+    let frameObserver = null;
 
     const defaultDisplayFields = [
       { name: "appRef", label: "Application Reference" },
@@ -140,11 +146,13 @@
     function showError(message) {
       statusText.textContent = message;
       statusElement.className = "error";
+      statusElement.style.display = "block";
     }
 
     function showStatus(message, className = "") {
       statusText.textContent = message;
       statusElement.className = className;
+      statusElement.style.display = "block";
     }
 
     function base64UrlDecode(value) {
@@ -274,22 +282,87 @@
     }
 
     function displayMetadata(payload, fields) {
-      metadataElement.replaceChildren();
+      metadataPayload = payload || {};
+      metadataFields = fields || defaultDisplayFields;
+      injectMetadataIntoFrame();
+    }
 
-      for (const field of fields) {
-        const container = document.createElement("div");
-        container.className = "field";
+    function injectMetadataIntoFrame() {
+      let frameDocument;
+      try {
+        frameDocument = platformFrame.contentDocument;
+      } catch {
+        return;
+      }
 
-        const label = document.createElement("span");
-        label.className = "label";
+      if (!frameDocument?.body) return;
+
+      const titlebar = frameDocument.querySelector("cp-titlebar");
+      if (!titlebar) return;
+
+      let strip = frameDocument.getElementById("ic-request-metadata");
+      if (!strip) {
+        const style = frameDocument.createElement("style");
+        style.id = "ic-request-metadata-style";
+        style.textContent = `
+          #ic-request-metadata {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 8px 22px;
+            padding: 11px 18px 12px;
+            background: #17365d;
+            color: #fff;
+            font-family: Arial, Helvetica, sans-serif;
+            font-size: 13px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, .14);
+          }
+          #ic-request-metadata .ic-request-field { min-width: 0; }
+          #ic-request-metadata .ic-request-label {
+            display: block;
+            color: #cbd8e8;
+            font-size: 10px;
+            font-weight: bold;
+            letter-spacing: .04em;
+            text-transform: uppercase;
+          }
+          #ic-request-metadata .ic-request-value {
+            display: block;
+            margin-top: 2px;
+            overflow-wrap: anywhere;
+          }
+        `;
+        frameDocument.head.appendChild(style);
+
+        strip = frameDocument.createElement("section");
+        strip.id = "ic-request-metadata";
+        strip.setAttribute("aria-label", "Request details");
+        titlebar.insertAdjacentElement("afterend", strip);
+      }
+
+      const renderKey = JSON.stringify(metadataFields.map(field => [
+        field.name,
+        field.label,
+        field.type,
+        metadataPayload[field.name]
+      ]));
+      if (strip.dataset.renderKey === renderKey) return;
+      strip.dataset.renderKey = renderKey;
+
+      strip.replaceChildren();
+      for (const field of metadataFields) {
+        const container = frameDocument.createElement("div");
+        container.className = "ic-request-field";
+
+        const label = frameDocument.createElement("span");
+        label.className = "ic-request-label";
         label.textContent = field.label || field.name;
 
-        const value = document.createElement("span");
-        value.className = "value";
-        value.textContent = formatValue(payload[field.name], field.type);
+        const value = frameDocument.createElement("span");
+        value.className = "ic-request-value";
+        value.textContent = formatValue(metadataPayload[field.name], field.type);
 
         container.append(label, value);
-        metadataElement.appendChild(container);
+        strip.appendChild(container);
       }
     }
 
@@ -307,10 +380,24 @@
       platformFrame.style.display = "block";
     }
 
+    platformFrame.addEventListener("load", () => {
+      try {
+        frameObserver?.disconnect();
+        injectMetadataIntoFrame();
+
+        const frameDocument = platformFrame.contentDocument;
+        if (frameDocument?.body) {
+          frameObserver = new MutationObserver(injectMetadataIntoFrame);
+          frameObserver.observe(frameDocument.body, { childList: true, subtree: true });
+        }
+      } catch (error) {
+        console.warn("Unable to inject request details into IC:", error);
+      }
+    });
+
     async function hasActiveSession(authCheckUrl) {
       try {
         const target = new URL(authCheckUrl, window.location.origin);
-        target.searchParams.set("_authCheck", Date.now().toString());
 
         const response = await fetch(target.href, {
           method: "GET",
@@ -327,9 +414,25 @@
     }
 
     function buildLoginUrl(loginUrl) {
-      const target = new URL(loginUrl || "/", window.location.origin);
-      target.searchParams.set("_login", Date.now().toString());
-      return target.href;
+      return new URL(loginUrl || "/", window.location.origin).href;
+    }
+
+    function openLoginPopup(loginUrl) {
+      const width = Math.min(1100, window.screen.availWidth - 40);
+      const height = Math.min(800, window.screen.availHeight - 80);
+      const left = Math.max(0, Math.round(window.screenX + (window.outerWidth - width) / 2));
+      const top = Math.max(0, Math.round(window.screenY + (window.outerHeight - height) / 2));
+      const features = [
+        "popup=yes",
+        `width=${width}`,
+        `height=${height}`,
+        `left=${left}`,
+        `top=${top}`,
+        "resizable=yes",
+        "scrollbars=yes"
+      ].join(",");
+
+      return window.open(buildLoginUrl(loginUrl), "icAuthentication", features);
     }
 
     function waitForAuthentication(authCheckUrl, loginWindow) {
@@ -359,10 +462,16 @@
       const authCheckUrl = configuration.platform?.authCheckUrl || "/cp-rest/about";
       const loginUrl = configuration.platform?.loginUrl || configuration.platform?.iframeUrl || "/";
 
-      showStatus("Checking your IC session…");
-      if (await hasActiveSession(authCheckUrl)) return;
+      authOverlay.hidden = false;
+      authMessage.textContent = "Checking your Intelligent Capture session…";
+      loginButton.hidden = true;
+      if (await hasActiveSession(authCheckUrl)) {
+        authOverlay.hidden = true;
+        return;
+      }
 
-      showStatus("Sign in to Intelligent Capture in the separate window.");
+      authMessage.textContent = "Authentication is required. Sign in securely to continue.";
+      loginButton.hidden = false;
 
       return new Promise((resolve, reject) => {
         let authenticationInProgress = false;
@@ -370,37 +479,34 @@
         const beginLogin = async () => {
           if (authenticationInProgress) return;
           authenticationInProgress = true;
-          loginButton.style.display = "none";
+          loginButton.disabled = true;
+          loginButton.textContent = "Opening sign-in…";
 
-          const loginWindow = window.open(
-            buildLoginUrl(loginUrl),
-            "icAuthentication",
-            "popup=yes,width=1100,height=800,resizable=yes,scrollbars=yes"
-          );
+          const loginWindow = openLoginPopup(loginUrl);
 
           if (!loginWindow) {
             authenticationInProgress = false;
-            loginButton.style.display = "inline-block";
-            showError("The sign-in popup was blocked. Click Sign in to continue.");
+            loginButton.disabled = false;
+            loginButton.textContent = "Sign in";
+            authMessage.textContent = "The sign-in window was blocked. Allow popups and try again.";
             return;
           }
 
-          showStatus("Complete sign-in in the separate window…");
+          loginButton.textContent = "Waiting for sign-in…";
+          authMessage.textContent = "Complete sign-in in the separate window. This page will continue automatically.";
           try {
             await waitForAuthentication(authCheckUrl, loginWindow);
+            authOverlay.hidden = true;
             resolve();
           } catch (error) {
             authenticationInProgress = false;
-            loginButton.style.display = "inline-block";
-            showError(error.message);
+            loginButton.disabled = false;
+            loginButton.textContent = "Try again";
+            authMessage.textContent = error.message;
           }
         };
 
         loginButton.onclick = beginLogin;
-        loginButton.style.display = "inline-block";
-
-        // Attempt automatically; the button remains as a fallback for popup blockers.
-        beginLogin();
       });
     }
 
@@ -410,11 +516,8 @@
         platform: { iframeUrl: "/" },
         displayFields: defaultDisplayFields
       };
-
-      // Always show every field, even before decryption or when decryption fails.
-      displayMetadata({}, defaultDisplayFields);
-
-      let decryptionError = null;
+      let fields = defaultDisplayFields;
+      let preparationError = null;
 
       try {
         const response = await fetch("./metadata.json", { cache: "no-store" });
@@ -423,50 +526,60 @@
         }
 
         configuration = await response.json();
-        const fields = configuration.displayFields?.length
+        fields = configuration.displayFields?.length
           ? configuration.displayFields
           : defaultDisplayFields;
-
-        displayMetadata({}, fields);
-
-        if (!window.crypto?.subtle) {
-          throw new Error("This browser does not support Web Crypto. Use the page over HTTPS in a modern browser.");
-        }
-
-        if (!sessionToken) {
-          throw new Error("The required 'session' query parameter is missing.");
-        }
-
-        const plaintext = await decryptJwe(sessionToken, configuration.jwe?.privateKeyPkcs8Pem);
-
-        let payload;
-        try {
-          payload = JSON.parse(plaintext);
-        } catch {
-          throw new Error("The decrypted JWE payload is not valid JSON.");
-        }
-
-        displayMetadata(payload, fields);
       } catch (error) {
         console.error(error);
-        decryptionError = error;
-        showError(`Unable to decrypt the request: ${error.message}`);
+        preparationError = error;
       }
 
       try {
         await ensureAuthenticated(configuration);
-        loginButton.style.display = "none";
-        loadPlatform(configuration.platform?.iframeUrl || "/", sessionToken);
-
-        if (decryptionError) {
-          showError(`Request details could not be decrypted, but IC was loaded: ${decryptionError.message}`);
-        } else {
-          showStatus("Authenticated. Loading Intelligent Capture…", "success");
-          window.setTimeout(() => statusElement.remove(), 1200);
-        }
       } catch (authenticationError) {
         console.error(authenticationError);
         showError(`Unable to authenticate: ${authenticationError.message}`);
+        return;
+      }
+
+      let payload = {};
+      let decryptionError = preparationError;
+
+      if (!decryptionError) {
+        try {
+          if (!window.crypto?.subtle) {
+            throw new Error("This browser does not support Web Crypto. Use the page over HTTPS in a modern browser.");
+          }
+
+          if (!sessionToken) {
+            throw new Error("The required 'session' query parameter is missing.");
+          }
+
+          const plaintext = await decryptJwe(sessionToken, configuration.jwe?.privateKeyPkcs8Pem);
+          try {
+            payload = JSON.parse(plaintext);
+          } catch {
+            throw new Error("The decrypted JWE payload is not valid JSON.");
+          }
+        } catch (error) {
+          console.error(error);
+          decryptionError = error;
+        }
+      }
+
+      // Values become available only after authentication succeeds.
+      displayMetadata(payload, fields);
+
+      try {
+        loadPlatform(configuration.platform?.iframeUrl || "/", sessionToken);
+        if (decryptionError) {
+          showError(`Request details could not be decrypted, but IC was loaded: ${decryptionError.message}`);
+        } else {
+          statusElement.style.display = "none";
+        }
+      } catch (iframeError) {
+        console.error(iframeError);
+        showError(`Unable to load Intelligent Capture: ${iframeError.message}`);
       }
     }
 
